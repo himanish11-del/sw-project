@@ -1,0 +1,66 @@
+If(
+    CountRows(colContacts) = 1 &&
+    IsBlank(First(colContacts).Dial_in_Code),
+
+    Patch(
+        colContacts,
+        First(colContacts),
+        With(
+            {
+                CountryCode:
+                    Switch(
+                        CA_Address_1_Country_DataCardValue.Selected.'Default Label',
+                        "France", "+33",
+                        "Belgium", "+32",
+                        "Netherlands", "+31",
+                        "Luxembourg", "+352",
+                        "Germany", "+49",
+                        Blank()
+                    )
+            },
+            {
+                Dial_in_Code: CountryCode,
+                Dial_in_CodeId:JSON(
+                    First(
+                        Filter(
+                            Choices('Dial In Code'),
+                            Text(Value) = CountryCode
+                        )
+                    ).Value)
+            }
+        )
+    )
+);
+Set(varCultureLegalFomIsoCulture,
+    LookUp(
+        'Country Culture Mappings',
+        Country.'Default Label' = CA_Address_1_Country_DataCardValue.Selected.'Default Label' &&
+        Default = 'Country Culture Mapping Default'.Yes,
+        Culture.'ISO Culture'
+    )
+);
+
+Set(varCultureLegalFomName,
+    LookUp(
+        'Country Culture Mappings',
+        Country.'Default Label' = CA_Address_1_Country_DataCardValue.Selected.'Default Label' &&
+        Default = 'Country Culture Mapping Default'.Yes,
+        Culture.Name
+    )
+);
+
+Set(VarCountrySelected,Text(CA_Address_1_Country_DataCardValue.Selected.'Default Label'));
+
+ClearCollect(ColAllCulture,
+    ForAll(
+        Filter(
+            'Country Culture Mappings',
+            Country.Country = CA_Address_1_Country_DataCardValue.Selected.Country
+        ).Culture,
+        
+        {   IsoCultureValue: Culture.'ISO Culture',
+            CultureName : Culture.Name
+        }
+    )
+);
+//ClearCollect(colRsltAllCulture; ForAll(ColAllCulture; {IsoCultureValue: Culture.'ISO Culture'}));;

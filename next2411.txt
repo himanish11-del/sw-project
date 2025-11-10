@@ -1,0 +1,1152 @@
+//To creation of Opporuntity web url
+Set(
+    varAppUrl,
+    LookUp(
+        'Environment Variable Values',
+        'Environment Variable Definition'.'Schema Name' = "msc_CardsApplicationURL"
+    ).Value
+);
+Set(
+    varAppId,
+    LookUp(
+        'Environment Variable Values',
+        'Environment Variable Definition'.'Schema Name' = "msc_CardsApplicationId"
+    ).Value
+);
+If(
+    IsBlank(varAppUrl) || IsBlank(varAppId),
+    Notify(
+        "Application Id or URL setting are missing!",
+        NotificationType.Error
+    ),
+    Set(
+        gblBaseUrl,
+        varAppUrl & "?appid=" & varAppId & "&forceUCI=1&pagetype=entityrecord&etn=opportunity&id="
+    )
+);
+// End URL
+Set(varValidationMode, true);
+Set(varVATValidationMode, true);
+Set(varNACHCodeValidationMode, true);
+Set(varCityValidationMode, true);
+// Check if SIRET should be mandatory based on config and // Validate and set varIsSirect
+ 
+
+// Validate SIRET (France only)
+ Set(
+    varIsSirect,
+    If(
+        // Check if Siret field is mandatory (from config + hidden flag)
+        varIsSiretHidden = true &&
+        LookUp(
+            colFieldConfig,
+            CustomerType = Text(AC_CustomerType_DataCardValue.Selected.Value) &&
+            FieldName = "Siret",
+            Mandatory
+        ),       
+        If(
+            CA_Address_1_Country_DataCardValue.Selected.'Default Label' = "France",
+            !(!IsBlank(Trim(CA_Siret_DataCardValue.Value)) && IsMatch(CA_Siret_DataCardValue.Value, "^\d{14}$")),
+            true
+        ), 
+        // Else → not mandatory, always valid
+        false
+    )
+);
+
+//  Validate SIREN (Belgium, Luxembourg, Netherlands, Germany)
+Set(
+    varIsSiren,
+    If(
+        // SIREN field mandatory (based on config)       
+        LookUp(
+            colFieldConfig,
+            CustomerType = Text(AC_CustomerType_DataCardValue.Selected.Value) &&
+            FieldName = "Siren",
+            Mandatory
+        ),
+        Switch(
+            CA_Address_1_Country_DataCardValue.Selected.'Default Label',
+            // 🇧🇪 Belgium → 10 digits, starting with 0
+            "Belgium",
+                !IsBlank(Trim(AC_RegistrationNumber_DataCardValue.Value)) &&
+                !IsMatch(AC_RegistrationNumber_DataCardValue.Value, "^0\d{9}$"),
+            // 🇱🇺 Luxembourg → B/L + 5 or 6 digits
+            "Luxembourg",
+               
+            !IsBlank(Trim(AC_RegistrationNumber_DataCardValue.Value)) &&
+            !IsMatch(AC_RegistrationNumber_DataCardValue.Value, "^[BL]\d{5,6}$")
+           
+         ,
+            // 🇳🇱 Netherlands → 8 digits
+            "Netherlands",
+                !IsBlank(Trim(AC_RegistrationNumber_DataCardValue.Value)) &&
+                !IsMatch(AC_RegistrationNumber_DataCardValue.Value, "^\d{8}$"),
+            // 🇩🇪 Germany → 10 digits
+            "Germany",
+                !IsBlank(Trim(AC_RegistrationNumber_DataCardValue.Value)) &&
+                !IsMatch(AC_RegistrationNumber_DataCardValue.Value, "^\d{10}$"),
+            // Default → not validated
+            false
+        ),
+        // If not mandatory → always valid
+        true
+    )
+);
+
+
+
+ 
+// Get all mandatory fields for current customer type
+// store selected customer type as text (Choice -> text)
+Set(
+    varSelectedCustomerType,
+    Text(AC_CustomerType_DataCardValue.Selected.Value)
+);
+// clear any previous missing fields
+Clear(colMissingFields);
+// iterate mandatory config rows and collect missing ones (each record will have FieldName)
+ForAll(
+    Filter(
+        colFieldConfig,
+        CustomerType = varSelectedCustomerType && Mandatory = true
+    ),
+    With(
+        {
+            _fn: FieldName,
+            _isMissing: Switch(
+                FieldName,
+                "Legal form",
+              If(
+                    IsBlank(AC_LegalForm_DataCardValue.Selected.Text) &&
+                    Lower(CA_Address_1_Country_DataCardValue.Selected.'Default Label') in 
+                        ["france", "netherlands", "luxembourg", "belgium", "germany"],
+                    LookUp(
+                        colFieldConfig,
+                        CustomerType = Text(AC_CustomerType_DataCardValue.Selected.Value) 
+                            && FieldName = "Legal form",
+                        Mandatory
+                    ),
+                    false
+                ),
+                "Siret",
+                /*IsBlank(CA_Siret_DataCardValue.Value) &&  Lower(CA_Address_1_Country_DataCardValue.Selected.'Default Label') in ["france"; "netherlands"; "luxembourg"; "belgium"; "germany"];*/
+                IsBlank(CA_Siret_DataCardValue.Value) &&  Lower(CA_Address_1_Country_DataCardValue.Selected.'Default Label') in ["france"],
+                "VAT Number",
+                IsBlank(AC_VATNumber_DataCardValue.Value),
+                "Siren",
+                IsBlank(AC_RegistrationNumber_DataCardValue.Value) &&  Lower('AC_Address1:Country/Region_DataCardValue'.Selected.'Default Label') in ["netherlands", "belgium","germany"],//work for Siren/Registration number
+                "Nace Code",
+                IsBlank(AC_CodeNACE_DataCardValue.Selected.'NACE Code'),
+                "Call for tender",
+                IsBlank(CallForTenderDataCardValue.Selected.Value),
+                // default -> not missing
+                false
+            )
+        },
+        If(
+            _isMissing,
+            Collect(
+                colMissingFields,
+                {FieldName: _fn}
+            )
+        )
+    )
+);
+// If any missing -> notify each and set flag; otherwise submit
+ If(
+    CountRows(colMissingFields) > 0,
+    // TRUE branch
+   ( ForAll(
+                colMissingFields,
+                Notify(
+                    "Please fill in all required fields",
+                    NotificationType.Error,30000
+                )
+
+                /*
+                Notify(
+                    "Mandatory field '" & Switch(
+                        Lower(ThisRecord.FieldName),
+                        "siret",
+                        "Siren/Registration number",
+                        "siren",
+                        "Registration number",
+                        ThisRecord.FieldName
+                    ) & "' is required.",
+                    NotificationType.Error
+                )*/  
+            ) 
+    );
+    Set(
+        varIsCustomerType,
+        true
+    ),
+    // FALSE branch
+    Set(
+        varIsCustomerType,
+        false
+    )
+);
+//Validate Contact First Record
+If(
+    IsBlank(First(colContacts).Salutation) && (OPP_OpportunityType_DataCardValue.Selected.Value = 3),
+    Set(
+        varIsFirstContactSalutationBlank,
+        true
+    ),
+    Set(
+        varIsFirstContactSalutationBlank,
+        false
+    )
+);
+//Validate Postalcod Format
+If(
+    IsBlank(Trim(CA_Address1_ZIP_Postal_Code_DataCardValue.Value)),
+    Set(
+        varIsPostCodeValidation,
+        false
+    ),
+    Switch(
+        CA_Address_1_Country_DataCardValue.Selected.'Default Label',
+        "France",
+        Set(
+            varIsPostCodeValidation,
+            !IsMatch(
+                Trim(CA_Address1_ZIP_Postal_Code_DataCardValue.Value),
+                "^\d{5}$"
+            )
+        ),
+        "Belgium",
+        Set(
+            varIsPostCodeValidation,
+            !IsMatch(
+                Trim(CA_Address1_ZIP_Postal_Code_DataCardValue.Value),
+                "^\d{4}$"
+            )
+        ),
+        "Luxembourg",
+        Set(
+            varIsPostCodeValidation,
+            !IsMatch(
+                Trim(CA_Address1_ZIP_Postal_Code_DataCardValue.Value),
+                "^L-\d{4}$"
+            )
+        ),
+        "Germany",
+        Set(
+            varIsPostCodeValidation,
+            !IsMatch(
+                Trim(CA_Address1_ZIP_Postal_Code_DataCardValue.Value),
+                "^\d{5}$"
+            )
+        ),
+        "Netherlands",
+        Set(
+            varIsPostCodeValidation,
+            !IsMatch(
+                Trim(CA_Address1_ZIP_Postal_Code_DataCardValue.Value),
+                "^\d{4}\s?[A-Za-z]{2}$"
+            )
+        ),
+            // Default → no error
+        Set(
+            varIsPostCodeValidation,
+            false
+        )
+    )
+);
+// Get CountryCode from selected country
+Set(
+    CountryCode,
+    LookUp(
+        Countries,
+        'Default Label' = CA_Address_1_Country_DataCardValue.Selected.'Default Label',
+        'ISO Code 2'
+    )
+);
+// Validate VAT
+If(
+    IsBlank(Trim(AC_VATNumber_DataCardValue.Value)),
+    Set(
+        varIsVATValidation,
+        false
+    ),
+    Switch(
+        CountryCode,
+        "FR",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^FR\d{11}$"
+            )
+        ),
+        "NL",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^NL\d{9}B\d{2}$"
+            )
+        ),
+        "LU",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^LU\d{8}$"
+            )
+        ),
+        "BE",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^BE\d{10}$"
+            )
+        ),
+        "DE",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^DE[1-9]\d{8}$"
+            )
+        ),
+        "AT",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^ATU\d{8}$"
+            )
+        ),
+        "BG",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^BG\d{9,10}$"
+            )
+        ),
+        "HR",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^HR\d{11}$"
+            )
+        ),
+        "CY",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^CY\w{9}$"
+            )
+        ),
+        "CZ",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^CZ\d{8,10}$"
+            )
+        ),
+        "DK",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^DK\d{8}$"
+            )
+        ),
+        "EE",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^EE\d{9}$"
+            )
+        ),
+        "FI",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^FI\d{8}$"
+            )
+        ),
+        "GR",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^GR\d{9}$"
+            )
+        ),
+        "HU",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^HU\d{8}$"
+            )
+        ),
+        "IE",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^IE[\dA-Z]{8,9}$"
+            )
+        ),
+        "IT",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^IT\d{11}$"
+            )
+        ),
+        "LT",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^LT(\d{9}|\d{12})$"
+            )
+        ),
+        "MT",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^MT\d{8}$"
+            )
+        ),
+        "PL",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^PL\d{10}$"
+            )
+        ),
+        "PT",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^PT\d{9}$"
+            )
+        ),
+        "RO",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^RO\d{2,10}$"
+            )
+        ),
+        "SK",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^SK\d{10}$"
+            )
+        ),
+        "SI",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^SI\d{8}$"
+            )
+        ),
+        "ES",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^ES\w{9}$"
+            )
+        ),
+        "SE",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^SE\d{12}$"
+            )
+        ),
+        "GB",
+        Set(
+            varIsVATValidation,
+            !IsMatch(
+                Trim(AC_VATNumber_DataCardValue.Value),
+                "^GB\d{9}$"
+            )
+        ),
+        // Default -> no error
+        Set(
+            varIsVATValidation,
+            false
+        )
+    )
+);
+
+
+// Check valid and Invalid Mobile in colcontact
+Set(
+    IsValidMobileRow,
+    !(CountRows(
+        Filter(
+            colContacts,
+            !IsBlank(Mobile) && !IsMatch(
+                Trim(Mobile),
+                "^\d{1,10}$"
+            )
+        )
+    ) = 0)
+);
+// Check valid and Invalid Phone in colcontact
+Set(
+    IsValidPhoneRow,
+    !(CountRows(
+        Filter(
+            colContacts,
+            !IsBlank(Phone) && !IsMatch(
+                Trim(Phone),
+                "^\d{1,10}$"
+            )
+        )
+    ) = 0)
+);
+// Check valid and Invalid Email in colcontact
+Set(
+    IsValidEmailRow,
+    !(CountRows(
+        Filter(
+            colContacts,
+            !IsBlank(Email) && !IsMatch(
+                Trim(Email),
+                "^[^@\s]+@[^@\s]+\.[^@\s]+$"
+            )
+        )
+    ) = 0)
+);
+
+
+
+
+// valid the Postal code according to country
+Set(
+    IsPostCodeValidation,
+    With(
+        {
+            pc: Trim(CA_Address1_ZIP_Postal_Code_DataCardValue.Value),
+            ctry: CA_Address_1_Country_DataCardValue.Selected.'Default Label'
+        },
+        If(
+            IsBlank(pc),
+            true,// blank postal code = invalid
+            If(
+                IsBlank(ctry),
+                false,// no country selected → don't validate
+                Switch(
+                    ctry,
+                    "France",
+                    !IsMatch(
+                        pc,
+                        "^\d{5}$"
+                    ),
+                    "Belgium",
+                    !IsMatch(
+                        pc,
+                        "^\d{4}$"
+                    ),
+                    "Luxembourg",
+                    !IsMatch(
+                        Upper(pc),
+                        "^L-\d{4}$"
+                    ),
+                    "Germany",
+                    !IsMatch(
+                        pc,
+                        "^\d{5}$"
+                    ),
+                    "Netherlands",
+                    !IsMatch(
+                        pc,
+                        "^\d{4}\s?[A-Za-z]{2}$"
+                    ),
+                    false// default: no error for other countries
+                )
+            )
+        )
+    )
+);
+// Unit validation 
+If(
+    IsBlank(OPP_Unit_DataCardValue.Selected.Value),
+    Set(
+        IsBlankUnit,
+        true
+    ),
+    Set(
+        IsBlankUnit,
+        false
+    )
+);
+// Culture Validation 
+If(
+    IsBlank(varCultureLegalFomName),
+    Set(
+        IsBlankCulture,
+        true
+    ),
+    Set(
+        IsBlankCulture,
+        false
+    )
+);
+If(IsBlank(CA_Address1_ZIP_Postal_Code_DataCardValue.Value),
+Set(
+        CardPostalCodeErrorMessage,
+        true
+    ),
+    Set(
+        CardPostalCodeErrorMessage,
+        false
+    )
+);
+
+If(
+    IsBlank(CA_CardAccountName_DataCardValue.Value),
+    Set(
+        CardAccountNameErrorMessage,
+        true
+    ),
+    Set(
+        CardAccountNameErrorMessage,
+        false
+    )
+);
+// Segment
+If(IsBlankOrError(CA_SegmentDataCardValue.Selected.Value) || Find(
+        "null",
+        Text(JSON(CA_SegmentDataCardValue.Selected))
+    ) > 0
+   ,
+    Set(
+        CardAccountSegmentErrorMsg,
+        true
+    ),
+    Set(
+        CardAccountSegmentErrorMsg,
+        false
+    )
+);
+
+If(
+    LookUp(
+        colFieldConfig,
+        CustomerType = Text(AC_CustomerType_DataCardValue.Selected.Value) && FieldName = "Siren",
+        Mandatory
+    ) && 
+    IsBlank(CA_AccountSearch_DataCardValue.Selected.'Registration Number') &&
+    (IsBlank(CA_Siret_DataCardValue.Value) || CardAccDiffFrmAccCheckbox.Checked),
+    Set(AccountSirenErrorMsg, true),
+    Set(AccountSirenErrorMsg, false)
+);
+
+If(
+    IsBlank(CA_TypeOfAccount_DataCardValue.Selected.Value),
+    Set(
+        CardAccountTypeOfAccountErrorMessage,
+        true
+    ),
+    Set(
+        CardAccountTypeOfAccountErrorMessage,
+        false
+    )
+);
+
+If(
+    IsBlank(CA_Address1_StreetDataCardValue.Value),
+    Set(
+        CardAccountAddressErrorMessage,
+        true
+    ),
+    Set(
+        CardAccountAddressErrorMessage,
+        false
+    )
+);
+
+If(
+    IsBlank(CA_Address1_ZIP_Postal_Code_DataCardValue.Value),
+    Set(
+        CardAccountPostalCodeErrorMessage,
+        true
+    ),
+    Set(
+        CardAccountPostalCodeErrorMessage,
+        false
+    )
+);
+
+If(
+    IsBlank(CA_Address1_City_DataCardValue.Value),
+    Set(
+        CardAccountCityErrorMessage,
+        true
+    ),
+    Set(
+        CardAccountCityErrorMessage,
+        false
+    )
+);
+
+If(
+    IsBlank(CA_Address_1_Country_DataCardValue.Selected.'Default Label'),
+    Set(
+        CardAccountCountryErrorMessage,
+        true
+    ),
+    Set(
+        CardAccountCountryErrorMessage,
+        false
+    )
+);
+
+If(
+    IsBlank(ACC_AccountName_DataCardValue.Value),
+    Set(
+        AccountNameErrorMessage,
+        true
+    ),
+    Set(
+        AccountNameErrorMessage,
+        false
+    )
+);
+
+If(
+    IsBlank(AC_AddressDataCardValue.Value),
+    Set(
+        AccountAddressErrorMessage,
+        true
+    ),
+    Set(
+        AccountAddressErrorMessage,
+        false
+    )
+);
+If(
+    IsBlank('AC_Address1:ZIP/PostalCode_DataCardValue'.Value),
+    Set(
+        AccountPostalCodeErrorMessage,
+        true
+    ),
+    Set(
+        AccountPostalCodeErrorMessage,
+        false
+    )
+);
+If(
+    IsBlank('AC_Address1:City_DataCardValue'.Value),
+    Set(
+        AccountCityErrorMessage,
+        true
+    ),
+    Set(
+        AccountCityErrorMessage,
+        false
+    )
+);
+If(
+    IsBlank('AC_Address1:Country/Region_DataCardValue'.SelectedItems),
+    Set(
+        AccountCountryErrorMessage,
+        true
+    ),
+    Set(
+        AccountCountryErrorMessage,
+        false
+    )
+);
+If(
+    IsBlank(AC_CustomerType_DataCardValue.SelectedItems),
+    Set(
+        AccountCustomerTypeErrorMessage,
+        true
+    ),
+    Set(
+        AccountCustomerTypeErrorMessage,
+        false
+    )
+);
+
+If(
+    IsBlank(AC_CodeNACE_DataCardValue.SelectedItems),
+    Set(
+        AccountCodeNaceErrorMessage,
+        true
+    ),
+    Set(
+        AccountCodeNaceErrorMessage,
+        false
+    )
+);
+
+If(
+    IsBlank(First(colContacts).FirstName),
+    Set(IsFirstNameError, true),
+    Set(IsFirstNameError, false)
+);
+
+If(
+    IsBlank(First(colContacts).LastName),
+    Set(IsLastNameError, true),
+    Set(IsLastNameError, false)
+);
+
+
+If(
+    IsBlank(OPP_OpportunityType_DataCardValue.Selected.Value),
+    Set(
+        OpptypeErrorMessage,
+        true
+    ),
+    Set(
+        OpptypeErrorMessage,
+        false
+    )
+);
+If(
+    IsBlank(OPP_ConsumptionPerMonth_DataCardValue.Text),
+    Set(
+        OppConsumptionErrorMessage,
+        true
+    ),
+    Set(
+        OppConsumptionErrorMessage,
+        false
+    )
+);
+// Propriétaire CA_Propriétaire_DataCardValue is blank
+If(
+    IsBlank(CA_Propriétaire_DataCardValue.SelectedItems),
+    Set(
+        CardPropriétaireErrorMessage,
+        true
+    ),
+    Set(
+        CardPropriétaireErrorMessage,
+        false
+    )
+);
+//  to validate colContacts collection so that it ensures at least one record has a value in the Salutation field. If none have it filled in, it will display a Error message.
+If(
+    (CountIf(
+        colContacts,
+        !IsBlank(Salutation)
+    ) = 0 && OPP_OpportunityType_DataCardValue.Selected.Value = 3),
+    Notify(
+        "Error: Note: Salutation and applicable Contact Roles are required to be updated when Opportunity Type is equal to 'Carte Mobility Corporate.",
+        NotificationType.Error,30000
+    )
+);
+// Check each record in the colContacts collection for missing Mobile & Phone
+ForAll(
+    Filter(
+        colContacts,
+        IsBlank(Mobile) && IsBlank(Phone)    // Both numbers empty
+    ),
+    If(
+        !(IsBlank(FirstName) && IsBlank(LastName)),   // Only if at least one name is present
+        Notify(
+            "Missing Mobile/Phone for: " &
+            Coalesce(FirstName, "") & " " & Coalesce(LastName, ""),
+            NotificationType.Error,30000
+        )
+    )
+);
+
+// Verify if both Phone and Mobile numbers are blank
+Set(
+    IsValidateBothMobilePhone,
+    CountRows(
+        Filter(
+            colContacts,
+            IsBlank(Mobile) && IsBlank(Phone)
+        )
+    ) > 0
+);
+
+// Validate mandatory fields
+Set (
+    varHasValidationError,
+    varIsVATValidation = true 
+    || IsPostCodeValidation = true 
+    || IsValidMobileRow
+    || IsValidPhoneRow
+    || IsValidEmailRow
+    || IsValidateBothMobilePhone = true 
+    || CardAccountSegmentErrorMessage = true 
+    || IsBlankUnit = true 
+    || IsBlankCulture = true
+    || varIsPostCodeValidation = true 
+    || varIsFirstContactSalutationBlank = true 
+    || varIsCustomerType = true
+    || varIsSirect =true
+    || varIsSiren =true
+   
+
+
+    || IsBlank(CA_CardAccountName_DataCardValue.Value) 
+    || IsBlank(CA_TypeOfAccount_DataCardValue.SelectedItems) 
+    || IsBlank(CA_Address1_StreetDataCardValue.Value) 
+    || IsBlank(CA_Address1_ZIP_Postal_Code_DataCardValue.Value) 
+    || IsBlank(CA_Address1_City_DataCardValue.Value) 
+    || IsBlank(CA_Address_1_Country_DataCardValue.SelectedItems)
+    || IsBlank(CA_Propriétaire_DataCardValue.SelectedItems) 
+    || IsBlank(ACC_AccountName_DataCardValue.Value) 
+    //|| IsBlank(AC_LegalForm_DataCardValue.SelectedItems)
+    || IsBlank(AC_AddressDataCardValue.Value) 
+    || IsBlank('AC_Address1:Country/Region_DataCardValue'.SelectedItems) 
+    || IsBlank('AC_Address1:ZIP/PostalCode_DataCardValue'.Value) 
+    //|| IsBlank(AC_VATNumber_DataCardValue.Value)
+    || IsBlank(FirstNmaeTextInputCanvas.Value) 
+    || IsBlank(LastNameTextInputCanvas.Value) 
+    || IsBlank(EmailTextInputCanvas.Value)
+);
+// Initialize validation message list
+Set(
+    varValidationMessages,
+    []
+);
+
+
+
+If(
+    varHasValidationError,
+     // TRUE = show  
+    If(
+       
+       IsValidMobileRow,
+        Notify(
+           "Invalid mobile format",
+            NotificationType.Error,30000
+        ),
+       
+        IsValidPhoneRow,
+        Notify(
+            "Invalid phone format",
+            NotificationType.Error,30000
+        )      
+        ,
+        IsValidateBothMobilePhone,
+        Notify(
+            "Missing Mobile/Phone",
+            NotificationType.Error,30000
+        ),
+        IsValidEmailRow,
+        Notify(
+            "Invalid email format.",
+            NotificationType.Error,30000
+        ),
+        varIsPostCodeValidation,
+        Notify(
+            "Invalid Postal code format",
+            NotificationType.Error,30000
+        ),
+        varIsVATValidation,
+        Notify(
+            "Invalid VAT number format",
+            NotificationType.Error,30000
+        ),
+        IsBlankCulture,
+        Notify(
+            "Culture required",
+            NotificationType.Error,30000
+        ),
+        
+        // Otherwise, by default, consider some mandatory fields as blank
+        Notify(
+            "Please fill in all required fields.",
+            NotificationType.Error,30000
+        )
+    ),
+    // FALSE = proceed
+    With(
+        {
+            objAccount: {
+                name: ACC_AccountName_DataCardValue.Value,
+                fou_legalformcode: AC_LegalForm_DataCardValue.Selected.Code,
+                fou_address: AC_AddressDataCardValue.Value,
+                fou_additionaladdressdetails: AC_AdditionalAddressDetails_DataCardValue.Value,
+                fou_additionallocation: AC_AdditionalLocation_DataCardValue.Value,
+                address1_postalcode: 'AC_Address1:ZIP/PostalCode_DataCardValue'.Value,
+                address1_city: 'AC_Address1:City_DataCardValue'.Value,
+                address1_country: 'AC_Address1:Country/Region_DataCardValue'.Selected.'Default Label',
+                fou_registrationnumber: AC_RegistrationNumber_DataCardValue.Value,
+                fou_natureoftheaccountcode: AC_CustomerType_DataCardValue.Selected.Value,
+                fou_cedex: AC_Cedex_DataCardValue.Value,
+                fou_vatnumber: AC_VATNumber_DataCardValue.Value,
+                fou_codenaceid: AC_CodeNACE_DataCardValue.Selected.'NACE Code',
+                fou_nacename: AC_NaceNameDataCardValue.Value,
+                fou_customerType: AC_CustomerType_DataCardValue.Selected.Value//Customer Type
+            },
+            
+            objCardAccount: {
+                fou_cardaccountname: CA_CardAccountName_DataCardValue.Value,
+                fou_typeofaccountcode: CA_TypeOfAccount_DataCardValue.Selected.Value,
+                fou_activityarea1code: CA_SegmentDataCardValue.Selected.Value,
+                fou_address: AC_AddressDataCardValue.Value,
+                fou_additionallocation: CA_AdditionalLocation_DataCardValue.Value,
+                fou_additionaladdressdetails: CA_AdditionalAddressDetails_DataCardValue.Value,
+                fou_postalcode: CA_Address1_ZIP_Postal_Code_DataCardValue.Value,
+                fou_city: CA_Address1_City_DataCardValue.Value,
+                fou_countryid: CA_Address_1_Country_DataCardValue.Selected.Country,
+                // Siret Number France
+                fou_siret: If(
+                    CA_Siret_DataCardKey.Text = "Siret",
+                    CA_Siret_DataCardValue.Value
+                    
+                ),                
+                //Registration Number
+                fou_cedex: CA_Cedex_DataCardValue.Value,
+                fou_keyword: CA_Keyword_DataCardValue.Value,
+                fou_proprietaireid: CA_Propriétaire_DataCardValue.Selected.User,
+                fou_OwnerRatcom: CA_RATCOM_DataCardValue.Value,
+                fou_Node: varNodes,
+                // Nodes
+                fou_ClientRef: Client_Reference_DataCardValue.Value,
+                fou_promocode: CA_PromoCode_DataCardValue.Value,
+                fou_origincode: CA_Origin_DataCardValue.Selected.Value,
+                fou_electriclightvehicles: Int(CA_ElectricLightVehicles_DataCardValue.Text),
+                fou_electriccommercialvehicles: Int(CA_ElectricCommercialVehicles_DataCardValue.Text),
+                fou_electrictrucks: Int(CA_ElectricTrucks_DataCardValue.Text),
+                fou_commentary: CA_FollowUp_Feeling_Commentary_DataCardValue.Value,
+                fou_backOfficeUser: CA_BackOfficUser_DataCardValue.Selected.User,
+                fou_RatcomBackOffice: CA_RATCOM_DataCardValue.Value,
+                fou_defaultCulture: varCultureLegalFomIsoCulture,
+                stationCode: AC_StationCodeText.Value,// Station Code
+                //Additional needs
+                fou_hastoll: LookUp(
+                    colServiceSelections,
+                    StartsWith(ServiceName,"Toll"),
+                    IsChecked
+                ),
+                fou_istank: LookUp(
+                    colServiceSelections,
+                    ServiceName = "Tank",
+                    IsChecked
+                ),
+                fou_isparking: LookUp(
+                    colServiceSelections,
+                    ServiceName = "Car Park",
+                    IsChecked
+                ),
+                fou_hasfleetmanagementtool: LookUp(
+                    colServiceSelections,
+                    ServiceName = "Fleet management tool",
+                    IsChecked
+                ),
+                fou_haselectricterminal: LookUp(
+                    colServiceSelections,
+                    StartsWith(ServiceName, "Electrical terminal"),
+                    IsChecked
+                ),
+                fou_lightvehicle: Int(LightVehicleCardValue.Text),
+                fou_commercialvehicle: Int(CommercialVehicle_DataCardValue.Text),
+                fou_truck: Int(DataCardValue10.Text)
+            },
+            objOpportunity: {
+                fou_opportunitytypeas24cardscode: JSON(OPP_OpportunityType_DataCardValue.Selected.Value),
+                fou_sourcecode: OPP_Source_DataCardValue.Selected.Value,
+                fou_consumptionpermonth: OPP_ConsumptionPerMonth_DataCardValue.Text,
+                fou_unitcode: OPP_Unit_DataCardValue.Selected.Value,
+                fou_turnoverfuelormonth: 'OPP_TurnoverFuel/Month_DataCardValue'.Text,
+                fou_turnoverofffuelormonth: 'OPP_TurnoverOffFuel/Month_DataCardValue'.Text,
+                fou_volumekg: Int('OPP_Volume(Kg)DataCardValue'.Text),
+                fou_volumekwh: Int('OPP_Volume (kWh)_DataCardValue'.Text),
+                fou_kilometers: Int(OPP_Kilometers_DataCardValue.Text),
+                fou_competitionavailablecode: varSelectedCompetition,
+                fou_competitioncomment: DataCardValue6.Value,
+                fou_activityradiationcode: DataCardValue7.Selected.Value,
+                fou_potentialvolume: Int(DataCardValue11.Value)
+            }
+        },
+        Set(varTest,"befor executing api");
+        Set(
+            IsSpinner,
+            true
+        );
+        // Begin actions
+        Set(
+            objProspectPayload,
+            {
+                account: objAccount,
+                cardaccount: objCardAccount,
+                conContact: colContacts,
+                opportunity: objOpportunity
+            }
+        );
+        Notify(
+            "Prospect creation is in process",
+            NotificationType.Information,30000
+        );
+        Set(
+            prospectPayload,
+            JSON(
+                objProspectPayload,
+                JSONFormat.Compact
+            )
+        );
+        Set(
+            response,
+            Environment.msc_createProspect({prospectData: prospectPayload})
+        );
+        Set(
+            varResult,
+            Split(
+                response.result,
+                ":"
+            )
+        );
+        Set(
+            varResultMessage,
+            First(varResult).Value
+        );
+        Set(
+            varOpporunityId,
+            Last(varResult).Value
+        );
+        Set(
+            IsSpinner,
+            false
+        );
+        If(
+            !IsBlank(response.result),
+            Notify(
+                varResultMessage,
+                NotificationType.Success
+            );
+            Launch(
+                gblBaseUrl & varOpporunityId,
+                {},
+                LaunchTarget.Replace
+            ),
+            Notify(
+                "Prospect created, but no message returned.",
+                NotificationType.Information
+            );
+        )
+    )
+)

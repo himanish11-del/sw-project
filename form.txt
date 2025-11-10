@@ -1,0 +1,136 @@
+Set(userRecord, LookUp(Users, 'User Name' = User().Email));
+Set(varSalesOrg, userRecord.'Sales Organization'.'SAP Sales Org. Code');
+Set(varSelectedUserSalesOrganizationId,userRecord.'Sales Organization'.'Sales Organization Id');
+
+Set(
+    varSelectedSalesOrgCountry,
+    LookUp('Sales Organizations', 'Sales Organization Id' = varSelectedUserSalesOrganizationId ,Country).'Default Label'
+);
+
+Set(
+    varSelectedSalesOrgCountryId,
+    LookUp('Sales Organizations', 'Sales Organization Id' = varSelectedUserSalesOrganizationId ,Country).Country
+);
+
+Set(varSelectedCountry,varSelectedSalesOrgCountry);
+
+Set(varCountry,varSelectedSalesOrgCountry);
+
+Set(varIsSiretHidden,
+If(
+   varSelectedSalesOrgCountry in ["France", 
+    //"Belgium";
+    //"Netherlands";
+    //"Luxembourg";
+    //"Germany"
+    ],
+    true,
+    false
+));
+Set(varSelectedCountry,varSelectedSalesOrgCountry);
+
+
+Set(
+    varSirenName,
+    If(
+        varSelectedCountry = "France",
+        "Siret",
+        If(
+            varSelectedCountry in [
+                "Belgium",
+                "Netherlands",
+                "Luxembourg",
+                "Germany"
+            ],
+            "Registration number",
+            ""
+        )
+    )
+);
+
+If(
+    CountRows(colContacts) = 1 && IsBlank(First(colContacts).Dial_in_Code),
+    UpdateIf(
+        colContacts,
+        true,
+        {
+            Dial_in_Code: Switch(
+                varSelectedCountry,
+                "France", "+33",
+                "Belgium", "+32",
+                "Netherlands", "+31",
+                "Luxembourg", "+352",
+                "Germany", "+49",
+                Blank()
+            )
+        }
+    )
+);
+
+If(
+    !IsBlank(varSelectedCountry),
+    Switch(
+        varSelectedCountry,
+        "France",
+            If(
+                !IsMatch(Trim(varPostalCodeRefValue), "^\d{5}$"),
+                Set(PostalCodeValidationMessage,"Postal code must be exactly 5 digits.")
+            ),
+        "Belgium",
+            If(
+                !IsMatch(Trim(varPostalCodeRefValue), "^\d{4}$"),
+                Set(PostalCodeValidationMessage,"Postal code must be exactly 4 digits.")
+            ),
+        "Luxembourg",
+            If(
+                !IsMatch(Trim(varPostalCodeRefValue), "^L-\d{4}$"),
+                Set(PostalCodeValidationMessage,"Postal code must be in format L-XXXX (e.g., L-1234).")
+            ),
+        "Germany",
+            If(
+                !IsMatch(Trim(varPostalCodeRefValue), "^\d{5}$"),
+                Set(PostalCodeValidationMessage,"Postal code must be exactly 5 digits.")
+            ),
+        "Netherlands",
+            If(
+                !IsMatch(Trim(varPostalCodeRefValue), "^\d{4}\s?[A-Za-z]{2}$"),
+                Set(PostalCodeValidationMessage, "Postal code must be 4 digits + space + 2 letters (e.g., 1234 AB).")
+            ),
+        Blank()   // default: no error if country not listed
+    ),
+    Blank()   // no error if no country selected
+);
+
+//Set(varSelectedSalesOrgCountry,varSelectedCountry);
+
+Set(varCultureLegalFomIsoCulture,
+    LookUp(
+        'Country Culture Mappings',
+        Country.'Default Label' = varSelectedCountry &&
+        Default = 'Country Culture Mapping Default'.Yes,
+        Culture.'ISO Culture'
+    )
+);
+
+Set(varCultureLegalFomName,
+    LookUp(
+        'Country Culture Mappings',
+        Country.'Default Label' = varSelectedCountry &&
+        Default = 'Country Culture Mapping Default'.Yes,
+        Culture.Name
+    )
+);
+
+Set(VarCountrySelected,Text(varSelectedCountry));
+
+ClearCollect(ColAllCulture,
+    ForAll(
+        Filter(
+            'Country Culture Mappings',
+            Country.Country = varSelectedSalesOrgCountryId).Culture,
+        
+        {   IsoCultureValue: Culture.'ISO Culture',
+            CultureName : Culture.Name
+        }
+    )
+);
